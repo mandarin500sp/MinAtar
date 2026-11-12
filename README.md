@@ -69,6 +69,99 @@ Use the arrow keys to move and space bar to fire. Press q to quit and r to reset
 Finally, we provide a simple implementations of DQN in `dqn.py` and online actor-critic with eligibility traces in `AC_lambda.py`.
 
 
+## Reset Modes
+
+The `reset_mode` constructor argument selects the initial-state distribution and persists across episodes. Calling `reset()` does not change the selected mode.
+
+| Mode | Behavior | Supported games |
+|---|---|---|
+| `'default'` | Preserves the original reset behavior and seeded starting sequence | All games |
+| `'randomized'` | Randomizes starting positions subject to the recovery condition described below | Breakout |
+
+Unknown modes raise `ValueError`. Requesting `'randomized'` for another game also raises `ValueError`; those games retain their existing resets for now.
+
+The option passes from the Gymnasium `BaseEnv` wrapper through `**kwargs` to `Environment`, which forwards it to the Breakout constructor. No new argument is added to `reset()`, and no common game superclass is introduced. The existing `self.random` generator continues to supply all random draws.
+
+```python
+from minatar import Environment
+
+# Omitting reset_mode keeps the original reset.
+original = Environment('breakout')
+
+env = Environment('breakout', reset_mode='randomized', sticky_action_prob=0.0)
+env.seed(42)
+env.reset()
+```
+
+With Gymnasium, import Gymnasium first so its environment plugins can load before the MinAtar wrapper is used:
+
+```python
+import gymnasium as gym
+
+env = gym.make('MinAtar/Breakout-v1', reset_mode='randomized',
+               sticky_action_prob=0.0)
+observation, info = env.reset(seed=42)
+```
+
+### Breakout Initial States
+
+The board has 10 rows and 10 columns, indexed from 0 to 9. Coordinates are `(x, y)`, with the origin at the top left and increasing y pointing downward. The paddle occupies one cell on row 9.
+
+In default mode, the ball starts at `(0, 3)` moving down-right or `(9, 3)` moving down-left, with equal probability. The paddle starts in column 4.
+
+In randomized mode, the ball starts on row 3 in a uniformly sampled column. From the left half, columns 0–4, its initial direction is down-right; from the right half, columns 5–9, it is down-left. There is no vertical direction and no special central-column case: the center lies between columns 4 and 5.
+
+Both modes initialize the same 30 bricks on rows 1–3, set the trail to the ball's initial position, and clear `strike` and `terminal`. The game dynamics, action set, rewards, observation channels, and termination rules are unchanged.
+
+### First Contact and Error Recovery
+
+Starting at row 3 and moving downward, the ball attempts to enter row 9 on the sixth action. There are no bricks below row 3. The paddle moves before the ball, so the sixth paddle action is available before collision detection.
+
+The randomized reset predicts those six horizontal moves, including side-wall reflections. This follows the existing game rule: an attempted move outside columns 0–9 is clamped to the boundary and reverses the horizontal direction. Merely reaching a boundary column does not yet trigger a reflection.
+
+At paddle contact, `act()` accepts either the ball's previous column or its proposed column after wall handling. Let `C` be this set of contact columns. A paddle starting in column `p` is admitted when:
+
+```text
+min(abs(p - target) for target in C) + 2 <= 6
+```
+
+The two additional actions reserve a real step away from the contact zone and its reversal. The paddle is sampled uniformly from the admitted columns, conditional on the selected ball column. These columns are computed at each reset rather than read from a lookup table.
+
+| Initial ball column | Initial direction | Successful paddle columns at contact | Admitted initial paddle columns |
+|---|---|---|---|
+| 0 | Down-right | 5, 6 | 1–9 |
+| 1 | Down-right | 6, 7 | 2–9 |
+| 2 | Down-right | 7, 8 | 3–9 |
+| 3 | Down-right | 8, 9 | 4–9 |
+| 4 | Down-right | 9 | 5–9 |
+| 5 | Down-left | 0 | 0–4 |
+| 6 | Down-left | 0, 1 | 0–5 |
+| 7 | Down-left | 1, 2 | 0–6 |
+| 8 | Down-left | 2, 3 | 0–7 |
+| 9 | Down-left | 3, 4 | 0–8 |
+
+Randomized mode therefore has **70 distinct initial game states**: `9 + 8 + 7 + 6 + 5 + 5 + 6 + 7 + 8 + 9 = 70` ball/paddle column pairs. The ball direction is determined by its column, and all remaining game-state variables are fixed by the reset. By comparison, default mode has two initial game states. The 70 randomized states are not equiprobable: each ball column has probability `1/10`, followed by uniform sampling among that column's admitted paddle positions.
+
+For example, with the ball at `(9, 3)`, a paddle starting at 8 can follow `8 -> 9 -> 8 -> 7 -> 6 -> 5 -> 4` and return the ball on the sixth action. Starting at 9 cannot accommodate a real wrong step and its reversal in time. A right command against the wall would leave it at 9 and therefore does not count as a wrong movement.
+
+The wrong step need not be the first action. For the same ball start, a paddle at 0 can follow `0 -> 1 -> 0 -> 1 -> 2 -> 3 -> 3`, making its mistake on the second action and recovering on the third.
+
+This is an existence condition: at least one sequence with one repaired mistake succeeds. It does not imply that every mistake, at any time, is recoverable. It concerns the first return and the actions actually executed by the game. The wrapper's default `sticky_action_prob=0.1` can repeat the preceding action instead of executing the requested one; set it to zero for deterministic execution of a recovery sequence. The wrapper's existing `last_action` reset behavior is unchanged.
+
+### Exhaustive Reset Tests
+
+Run the tests from the repository root:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+`tests/test_breakout_reset.py` checks all 100 ball/paddle starting-column pairs. It discovers successful contact columns by executing the real `Env.act()` with stationary paddles, independently of the reset's prediction formula. It then searches up to all `3**6 = 729` six-action sequences per pair, using no-op, left, and right.
+
+A witness must include a one-cell movement that increases the distance from the contact zone, an immediate reversal to the preceding paddle position, and an actual upward bounce on the sixth action. Blocked commands are excluded. Each admitted pair's witness is replayed from a randomized reset forced to select that pair. The test confirms all 70 admitted pairs and rejects the other 30.
+
+Additional tests cover the original seeded reset sequence, clearing episode state, randomized reset reproducibility through `Environment`, invalid modes, the other games' default resets, and Gymnasium argument forwarding. The Gymnasium test is skipped if Gymnasium is not installed.
+
 ## Gymnasium Wrapper
 MinAtar is fully compatible with [Gymnasium](https://gymnasium.farama.org/).
 A Gymnasium environment can be constructed as follows:
