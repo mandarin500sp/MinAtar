@@ -17,7 +17,10 @@ import numpy as np
 #
 #####################################################################################################################
 class Env:
-    def __init__(self, ramping=None):
+    def __init__(self, ramping=None, reset_mode="default"):
+        if reset_mode not in ("default", "randomized"):
+            raise ValueError("Unsupported reset_mode: {!r}".format(reset_mode))
+        self.reset_mode = reset_mode
         self.channels ={
             'paddle':0,
             'ball':1,
@@ -111,9 +114,34 @@ class Env:
     # Reset to start state for new episode
     def reset(self):
         self.ball_y = 3
-        ball_start = self.random.randint(2)
-        self.ball_x, self.ball_dir = [(0,2),(9,3)][ball_start]
-        self.pos = 4
+        if self.reset_mode == "default":
+            ball_start = self.random.randint(2)
+            self.ball_x, self.ball_dir = [(0,2),(9,3)][ball_start]
+            self.pos = 4
+        else:
+            self.ball_x = int(self.random.randint(10))
+            self.ball_dir = 2 if self.ball_x < 5 else 3
+
+            # Predict the first paddle contact, including side-wall reflections.
+            steps_to_impact = 9 - self.ball_y
+            x = self.ball_x
+            dx = 1 if self.ball_dir == 2 else -1
+            for _ in range(steps_to_impact):
+                previous_x = x
+                next_x = x + dx
+                if next_x < 0 or next_x > 9:
+                    next_x = max(0, min(9, next_x))
+                    dx = -dx
+                x = next_x
+
+            impact_columns = {previous_x, x}
+            # Reserve two moves for a wrong step and its reversal.
+            valid_positions = [
+                p for p in range(10)
+                if min(abs(p - target) for target in impact_columns) + 2
+                <= steps_to_impact
+            ]
+            self.pos = int(self.random.choice(valid_positions))
         self.brick_map = np.zeros((10,10))
         self.brick_map[1:4,:] = 1
         self.strike = False

@@ -24,11 +24,18 @@ except:
 #####################################################################################################################
 class Environment:
     def __init__(self, env_name, sticky_action_prob=0.1,
-                difficulty_ramping=True):
+                difficulty_ramping=True, reset_mode="default"):
+        if reset_mode not in ("default", "randomized"):
+            raise ValueError("Unsupported reset_mode: {!r}".format(reset_mode))
+        env_kwargs = {"ramping": difficulty_ramping}
+        if env_name == "breakout":
+            env_kwargs["reset_mode"] = reset_mode
+        elif reset_mode != "default":
+            raise ValueError("Randomized reset is only supported for breakout")
         env_module = import_module('minatar.environments.' + env_name)
         self.random = np.random.RandomState()
         self.env_name = env_name
-        self.env = env_module.Env(ramping=difficulty_ramping)
+        self.env = env_module.Env(**env_kwargs)
         self.n_channels = self.env.state_shape()[2]
         self.sticky_action_prob = sticky_action_prob
         self.last_action = 0
